@@ -1,9 +1,9 @@
 """
 Automated zoom lens design agent for Zemax OpticStudio 2024 R1.
-APS-C 18-55mm F/1.4 3x zoom lens.
+Profile-driven sequential zoom lens design.
 
 Connects via Interactive Extension and runs a staged design loop:
-  1. Build 4-group zoom starting prescription
+  1. Build profile-defined zoom starting prescription
   2. Set up MCE multi-configuration
   3. Use optimization wizard + custom operands
   4. Staged optimization (feasibility → image-quality → field-balance → manufacturability)
@@ -84,86 +84,164 @@ class LensBuilder:
 
 # ── Build starting prescription ──────────────────────────────────────────────
 
+DEFAULT_LENS_PROFILE = {
+    "name": "generic profile-driven zoom",
+    "description": "Minimal generic zoom profile. Real designs should provide requirements.lens_profile.",
+    "surfaces": [
+        {"surface": 0, "radius": "infinity", "thickness": "infinity", "material": ""},
+        {"surface": 1, "radius": 60.0, "thickness": 5.0, "material": "N-BK7"},
+        {"surface": 2, "radius": -80.0, "thickness": 8.0, "material": "", "variable_gap": "g1"},
+        {"surface": 3, "radius": -45.0, "thickness": 3.0, "material": "N-SF5"},
+        {"surface": 4, "radius": 45.0, "thickness": 8.0, "material": "", "variable_gap": "g2"},
+        {"surface": 5, "radius": 55.0, "thickness": 4.0, "material": "N-BK7", "stop": True},
+        {"surface": 6, "radius": -70.0, "thickness": 20.0, "material": "", "variable_gap": "bfl"},
+        {"surface": 7, "radius": "infinity", "thickness": 0.0, "material": ""},
+    ],
+    "variable_gaps": [
+        {"name": "g1", "surface": 2, "default_mm": 8.0},
+        {"name": "g2", "surface": 4, "default_mm": 8.0},
+        {"name": "bfl", "surface": 6, "default_mm": 20.0},
+    ],
+    "merit": {"bfl_surface": 6, "max_field_index": 3},
+    "mce": {"include_aperture_operand": True, "include_field_operand": True},
+}
+
+
+def load_lens_profile(requirements: dict[str, Any], base_dir: Path | None = None) -> dict[str, Any]:
+    """Load and normalize a zoom lens profile from requirements."""
+    profile_ref = requirements.get("lens_profile") or requirements.get("lens_profile_path") or requirements.get("profile")
+    if isinstance(profile_ref, dict):
+        return normalize_lens_profile(profile_ref)
+    if isinstance(profile_ref, str) and profile_ref.strip():
+        path = Path(profile_ref)
+        if not path.is_absolute() and base_dir is not None:
+            path = base_dir / path
+        data = json.loads(path.read_text(encoding="utf-8"))
+        normalized = normalize_lens_profile(data)
+        normalized["source_path"] = str(path.resolve())
+        return normalized
+    return normalize_lens_profile(DEFAULT_LENS_PROFILE)
+
+
+def normalize_lens_profile(profile: dict[str, Any]) -> dict[str, Any]:
+    """Validate and enrich a user-supplied zoom lens profile."""
+    normalized = dict(profile)
+    surfaces = [dict(item) for item in normalized.get("surfaces") or []]
+    if not surfaces:
+        raise ValueError("Lens profile must include a non-empty 'surfaces' list.")
+
+    seen_surfaces: set[int] = set()
+    for surface in surfaces:
+        if "surface" not in surface:
+            raise ValueError("Each profile surface must include a 'surface' index.")
+        index = int(surface["surface"])
+        if index in seen_surfaces:
+            raise ValueError(f"Duplicate surface index in lens profile: {index}")
+        seen_surfaces.add(index)
+        surface["surface"] = index
+        surface["radius"] = _profile_number(surface.get("radius", "infinity"))
+        surface["thickness"] = _profile_number(surface.get("thickness", 0.0))
+        surface["material"] = surface.get("material", "")
+    surfaces.sort(key=lambda item: item["surface"])
+
+    explicit_gaps = [dict(item) for item in normalized.get("variable_gaps") or []]
+    gaps_by_name: dict[str, dict[str, Any]] = {}
+    for gap in explicit_gaps:
+        name = str(gap.get("name") or gap.get("variable_gap") or gap.get("surface"))
+        if "surface" not in gap:
+            raise ValueError(f"Variable gap '{name}' must include a surface index.")
+        gap["name"] = name
+        gap["surface"] = int(gap["surface"])
+        gap["default_mm"] = float(gap.get("default_mm", gap.get("default", 0.0)))
+        gap["per_config"] = dict(gap.get("per_config") or {})
+        gaps_by_name[name] = gap
+
+    for surface in surfaces:
+        gap_name = surface.get("variable_gap")
+        if not gap_name:
+            continue
+        gap_name = str(gap_name)
+        gaps_by_name.setdefault(
+            gap_name,
+            {
+                "name": gap_name,
+                "surface": surface["surface"],
+                "default_mm": float(surface.get("thickness", 0.0)),
+                "per_config": {},
+            },
+        )
+
+    variable_gaps = sorted(gaps_by_name.values(), key=lambda item: item["surface"])
+    surface_count = max(surface["surface"] for surface in surfaces) + 1
+    image_surface = int(normalized.get("image_surface", max(surface["surface"] for surface in surfaces)))
+    merit = dict(normalized.get("merit") or {})
+    merit.setdefault("bfl_surface", max(1, image_surface - 1))
+    merit.setdefault("max_field_index", 3)
+    mce = dict(normalized.get("mce") or {})
+    mce.setdefault("include_aperture_operand", True)
+    mce.setdefault("include_field_operand", True)
+
+    normalized["surfaces"] = surfaces
+    normalized["variable_gaps"] = variable_gaps
+    normalized["variable_gap_surfaces"] = [gap["surface"] for gap in variable_gaps]
+    normalized["surface_count"] = surface_count
+    normalized["image_surface"] = image_surface
+    normalized["merit"] = merit
+    normalized["mce"] = mce
+    normalized.setdefault("name", "unnamed zoom lens profile")
+    return normalized
+
+
+def _profile_number(value: Any) -> float:
+    if isinstance(value, str) and value.strip().lower() in {"inf", "+inf", "infinity", "+infinity"}:
+        return float("inf")
+    if isinstance(value, str) and value.strip().lower() in {"-inf", "-infinity"}:
+        return float("-inf")
+    return float(value)
+
+
+def build_zoom_prescription_from_profile(lb: LensBuilder, profile: dict[str, Any]) -> list[int]:
+    """Build a sequential zoom prescription from a normalized profile."""
+    lb.clear_and_resize(int(profile["surface_count"]))
+    for surface in profile["surfaces"]:
+        lb.set(
+            int(surface["surface"]),
+            radius=surface.get("radius"),
+            thickness=surface.get("thickness"),
+            material=surface.get("material", ""),
+            stop=bool(surface.get("stop")),
+        )
+    gap_surfaces = list(profile.get("variable_gap_surfaces") or [])
+    print(f"  Prescription profile: {profile.get('name')}")
+    print(f"  Surfaces: {profile['surface_count']}, variable gaps: {gap_surfaces}")
+    return gap_surfaces
+
+
+def resolve_gap_initial_value(gap: dict[str, Any], zoom_config: dict[str, Any]) -> float:
+    """Return the initial gap value for one configuration."""
+    explicit_values = zoom_config.get("gap_values_mm") or zoom_config.get("gaps_mm") or {}
+    gap_name = str(gap.get("name"))
+    if gap_name in explicit_values:
+        return float(explicit_values[gap_name])
+    surface_key = str(gap.get("surface"))
+    if surface_key in explicit_values:
+        return float(explicit_values[surface_key])
+
+    cfg_name = str(zoom_config.get("name") or "").lower()
+    for key, value in (gap.get("per_config") or {}).items():
+        if str(key).lower() == cfg_name or str(key).lower() in cfg_name:
+            return float(value)
+    return float(gap.get("default_mm", 0.0))
+
+
+
 def build_zoom_prescription(lb: LensBuilder) -> list[int]:
-    """
-    4-group zoom lens for APS-C 18-55mm F/1.4.
+    """Backward-compatible wrapper; new code should pass an explicit lens profile."""
+    return build_zoom_prescription_from_profile(lb, normalize_lens_profile(DEFAULT_LENS_PROFILE))
 
-    Returns list of variable-gap surface indices for MCE.
-
-    Surface layout (1-based, counting OBJ as 0):
-      0: OBJ (infinity)
-      Group 1 - Fixed front positive (S1-S6): 3 elements
-        S1-S2:   Singlet positive
-        S3-S4:   Singlet positive
-        S5-S6:   Cemented doublet (crown+flint)
-      S7: Gap G1→G2 [VARIABLE]
-      Group 2 - Moving variator negative (S8-S11): 2 elements
-        S8-S9:   Cemented doublet (flint+crown)
-      S10: Gap G2→G3 [VARIABLE]
-      Group 3 - Moving compensator positive (S11-S16): 3 elements
-        S11-S12: Positive singlet
-        S13:     STOP (aperture stop)
-        S14-S15: Positive singlet
-      S16: Gap G3→G4 [VARIABLE]
-      Group 4 - Fixed rear positive (S17-S24): 4 elements
-        S17-S18: Positive singlet
-        S19-S20: Cemented doublet (crown+flint)
-        S21-S22: Positive singlet
-      S23: Gap to image [BFL]
-      S24: IMA
-    """
-    lb.clear_and_resize(25)  # OBJ(0) + 24 surfaces + IMA(24) = 25 items (0..24)
-
-    # ── OBJ ──
-    lb.set(0, radius=float("inf"), thickness=float("inf"))
-
-    # ── Group 1: Fixed front positive ────────────────────────────────────────
-    lb.set(1,  radius=90.0,  thickness=9.0,  material="N-BK7")
-    lb.set(2,  radius=-200.0, thickness=2.0,  material="")
-    lb.set(3,  radius=60.0,  thickness=7.5,  material="N-SK16")
-    lb.set(4,  radius=-130.0, thickness=0.5,  material="")
-    lb.set(5,  radius=48.0,  thickness=8.5,  material="N-BAF10")
-    lb.set(6,  radius=-70.0,  thickness=5.0,  material="N-SF5")
-
-    # ── Gap G1→G2 (S7 thickness = variable) ─────────────────────────────────
-    lb.set(7,  radius=-100.0, thickness=4.0,  material="")  # ← MCE VAR
-
-    # ── Group 2: Moving variator negative ────────────────────────────────────
-    lb.set(8,  radius=-65.0,  thickness=3.0,  material="N-SF2")
-    lb.set(9,  radius=38.0,   thickness=7.0,  material="N-BK7")
-    lb.set(10, radius=-60.0,  thickness=8.0,  material="")  # ← MCE VAR
-
-    # ── Group 3: Moving compensator positive ─────────────────────────────────
-    lb.set(11, radius=75.0,   thickness=6.0,  material="N-BK7")
-    lb.set(12, radius=-90.0,  thickness=0.5,  material="")
-    lb.set(13, radius=float("inf"), thickness=1.5, material="", stop=True)  # STOP
-    lb.set(14, radius=55.0,   thickness=5.5,  material="N-SK16")
-    lb.set(15, radius=-75.0,  thickness=0.5,  material="")
-    lb.set(16, radius=65.0,   thickness=5.0,  material="")  # ← MCE VAR (gap G3→G4)
-
-    # ── Group 4: Fixed rear positive ─────────────────────────────────────────
-    lb.set(17, radius=38.0,   thickness=6.5,  material="N-LAK22")
-    lb.set(18, radius=-60.0,  thickness=0.3,  material="")
-    lb.set(19, radius=30.0,   thickness=7.5,  material="N-BK7")
-    lb.set(20, radius=-30.0,  thickness=4.5,  material="N-SF2")
-    lb.set(21, radius=60.0,   thickness=0.3,  material="")
-    lb.set(22, radius=48.0,   thickness=5.0,  material="N-SK16")
-    lb.set(23, radius=-110.0, thickness=25.0, material="")  # BFL
-
-    # ── IMA ──
-    lb.set(24, radius=float("inf"), thickness=0.0, material="")
-
-    variable_gap_surfaces = [7, 10, 16]
-    print(f"  Prescription built: 23 optical surfaces + OBJ + IMA")
-    print(f"  Stop at surface 13")
-    print(f"  Variable gaps at surfaces: {variable_gap_surfaces}")
-    return variable_gap_surfaces
-
-
-# ── MCE Setup ────────────────────────────────────────────────────────────────
 
 def setup_zoom_mce(system: Any, zoom_configs: list[dict[str, Any]],
-                   gap_surfaces: list[int]) -> None:
+                   gap_surfaces: list[int], profile: dict[str, Any] | None = None) -> None:
     """
     Set up Multi-Configuration Editor for zoom.
 
@@ -171,6 +249,13 @@ def setup_zoom_mce(system: Any, zoom_configs: list[dict[str, Any]],
     Also add YFIE (field Y) operands if needed to keep image height constant.
     """
     mce = system.MCE
+    profile = profile or normalize_lens_profile(DEFAULT_LENS_PROFILE)
+    profile_mce = profile.get("mce") or {}
+    variable_gaps = list(profile.get("variable_gaps") or [])
+    if not variable_gaps:
+        variable_gaps = [{"name": f"gap_{surface}", "surface": surface, "default_mm": 0.0} for surface in gap_surfaces]
+    include_aperture = bool(profile_mce.get("include_aperture_operand", True))
+    include_field = bool(profile_mce.get("include_field_operand", True))
     # Ensure correct number of configurations
     while mce.NumberOfConfigurations < len(zoom_configs):
         mce.AddConfiguration(True)
@@ -178,7 +263,7 @@ def setup_zoom_mce(system: Any, zoom_configs: list[dict[str, Any]],
         mce.DeleteConfiguration(mce.NumberOfConfigurations)
 
     # Ensure enough operands (one per variable gap + optional extras)
-    needed_ops = len(gap_surfaces) + 2  # THIC for gaps + APER + YFIE
+    needed_ops = len(variable_gaps) + int(include_aperture) + int(include_field)
     while mce.NumberOfOperands < needed_ops:
         mce.AddOperand()
     while mce.NumberOfOperands > needed_ops:
@@ -201,7 +286,8 @@ def setup_zoom_mce(system: Any, zoom_configs: list[dict[str, Any]],
     }
 
     # Operand 1..N: THIC for each variable gap
-    for op_idx, surf_num in enumerate(gap_surfaces):
+    for op_idx, gap in enumerate(variable_gaps):
+        surf_num = int(gap["surface"])
         operand = mce.GetOperandAt(op_idx + 1)
         operand.ChangeType(MultiConfigOperandType.THIC)
         operand.Param1 = surf_num
@@ -215,28 +301,28 @@ def setup_zoom_mce(system: Any, zoom_configs: list[dict[str, Any]],
                 if key in cfg_name.lower():
                     gaps = gap_estimates[key]
                     break
-            gap_val = gaps[op_idx] if op_idx < len(gaps) else 5.0
+            gap_val = resolve_gap_initial_value(gap, cfg)
             cell = operand.GetOperandCell(cfg_num)
             cell.DoubleValue = gap_val
-            print(f"    THIC S{surf_num} Config{cfg_num}='{cfg_name}': {gap_val}mm")
+            print(f"    THIC {gap['name']} S{surf_num} Config{cfg_num}='{cfg_name}': {gap_val}mm")
 
     # Operand N+1: APER (aperture type per config)
-    op_aper = mce.GetOperandAt(len(gap_surfaces) + 1)
+    op_aper = mce.GetOperandAt(len(variable_gaps) + 1)
     op_aper.ChangeType(MultiConfigOperandType.APER)
     op_aper.Param1 = 0  # System aperture
     for cfg_idx, cfg in enumerate(zoom_configs):
         cfg_num = cfg_idx + 1
-        fnum = cfg.get("f_number", 1.4)
+        fnum = cfg.get("f_number", profile_mce.get("default_f_number", 1.4))
         op_aper.GetOperandCell(cfg_num).DoubleValue = fnum
         print(f"    APER Config{cfg_num}: F/{fnum}")
 
     # Operand N+2: YFIE to set field height per config (keep image height constant)
-    op_yfie = mce.GetOperandAt(len(gap_surfaces) + 2)
+    op_yfie = mce.GetOperandAt(len(variable_gaps) + 2)
     op_yfie.ChangeType(MultiConfigOperandType.YFIE)
-    op_yfie.Param1 = 3  # Field 3 (max field)
+    op_yfie.Param1 = int(profile.get("merit", {}).get("max_field_index", 3))
     for cfg_idx, cfg in enumerate(zoom_configs):
         cfg_num = cfg_idx + 1
-        img_h = cfg.get("image_height_mm", 14.17)
+        img_h = cfg.get("image_height_mm", profile_mce.get("default_image_height_mm", 14.17))
         # At field angle 38.2°, image height varies with EFL. We set YFIE=0
         # meaning "use current field definition" (object-space angle).
         # Alternative: set specific image height per config
@@ -250,7 +336,8 @@ def setup_zoom_mce(system: Any, zoom_configs: list[dict[str, Any]],
 
 def build_merit_function(system: Any, requirements: dict[str, Any],
                           zoom_configs: list[dict[str, Any]],
-                          stage: str) -> None:
+                          stage: str,
+                          profile: dict[str, Any] | None = None) -> None:
     """
     Build staged merit function using optimization wizard + custom targets.
 
@@ -297,7 +384,7 @@ def build_merit_function(system: Any, requirements: dict[str, Any],
         _add_default_spot_operands(mfe, MeritOperandType, num_configs)
 
     # ── Add first-order targets per configuration ────────────────────────────
-    _add_first_order_targets(mfe, MeritOperandType, requirements, zoom_configs, stage)
+    _add_first_order_targets(mfe, MeritOperandType, requirements, zoom_configs, stage, profile)
 
     # ── Add manufacturing constraints ────────────────────────────────────────
     _add_manufacturing_constraints(mfe, MeritOperandType, requirements, stage)
@@ -345,11 +432,14 @@ def _add_default_spot_operands(mfe, op_type, num_configs: int) -> None:
                 _set_op_cell(op, 12, cfg)
 
 
-def _add_first_order_targets(mfe, op_type, requirements, zoom_configs, stage) -> None:
+def _add_first_order_targets(mfe, op_type, requirements, zoom_configs, stage, profile=None) -> None:
     """Add EFL, F/#, BFL, image height targets per configuration."""
     bfl_target = requirements.get("targets", {}).get("bfl_mm", 25.0)
     ttl_target = requirements.get("targets", {}).get("total_track_mm", 180.0)
     img_h_target = requirements.get("targets", {}).get("image_height_mm", 14.17)
+    profile_merit = (profile or {}).get("merit") or {}
+    bfl_surface = int(profile_merit.get("bfl_surface", 23))
+    max_field_index = int(profile_merit.get("max_field_index", 3))
 
     weights = {
         "feasibility": 10.0,
@@ -385,7 +475,7 @@ def _add_first_order_targets(mfe, op_type, requirements, zoom_configs, stage) ->
         op.Target = img_h_target
         op.Weight = w * 0.3
         _set_op_cell(op, 2, 0)   # wave
-        _set_op_cell(op, 3, 3)   # max field
+        _set_op_cell(op, 3, max_field_index)
         _set_op_cell(op, 12, conf)
 
     # TOTR global constraint
@@ -400,7 +490,7 @@ def _add_first_order_targets(mfe, op_type, requirements, zoom_configs, stage) ->
     op.Target = bfl_target
     op.Weight = w * 0.5
     _set_op_cell(op, 2, 0)
-    _set_op_cell(op, 3, 23)  # surface 23 is the last surface, its thickness is BFL
+    _set_op_cell(op, 3, bfl_surface)
 
     # AXCL - axial color
     op = mfe.AddOperand()
@@ -426,7 +516,7 @@ def _add_first_order_targets(mfe, op_type, requirements, zoom_configs, stage) ->
             op.ChangeType(op_type.DIMX)
             op.Target = distortion_target
             op.Weight = 1.0
-            _set_op_cell(op, 3, 3)
+            _set_op_cell(op, 3, max_field_index)
             _set_op_cell(op, 12, cfg_idx + 1)
 
 
@@ -492,10 +582,14 @@ def _set_op_cell(op, col: int, value: float) -> None:
 
 def configure_zoom_variables(system: Any, gap_surfaces: list[int],
                               zoom_configs: list[dict[str, Any]],
-                              stage: str) -> None:
+                              stage: str,
+                              profile: dict[str, Any] | None = None) -> None:
     """Set optimization variables based on stage."""
     lde = system.LDE
     mce = system.MCE
+    profile = profile or normalize_lens_profile(DEFAULT_LENS_PROFILE)
+    profile_merit = profile.get("merit") or {}
+    profile_variables = profile.get("variables") or {}
 
     if stage == "baseline":
         return
@@ -506,7 +600,7 @@ def configure_zoom_variables(system: Any, gap_surfaces: list[int],
     for op_idx in range(1, mce.NumberOfOperands + 1):
         try:
             operand = mce.GetOperandAt(op_idx)
-            if operand.TypeName in ("THIC", "APER", "YFIE"):
+            if operand.TypeName in tuple(profile_variables.get("mce_variable_operand_types", ["THIC"])):
                 for cfg in range(1, mce.NumberOfConfigurations + 1):
                     try:
                         operand.GetOperandCell(cfg).MakeSolveVariable()
@@ -516,8 +610,9 @@ def configure_zoom_variables(system: Any, gap_surfaces: list[int],
             continue
 
     if stage == "feasibility":
-        # Vary: all radii + BFL thickness
-        for s_idx in range(1, num_surfs):
+        # Vary: profile-selected radii + BFL thickness
+        radius_surfaces = profile_variables.get("feasibility_radius_surfaces") or _profile_powered_surfaces(profile, num_surfs)
+        for s_idx in radius_surfaces:
             try:
                 surf = lde.GetSurfaceAt(s_idx)
                 if surf.Material and surf.Material != "":
@@ -525,27 +620,47 @@ def configure_zoom_variables(system: Any, gap_surfaces: list[int],
             except Exception:
                 continue
         try:
-            lde.GetSurfaceAt(23).ThicknessCell.MakeSolveVariable()  # BFL
+            lde.GetSurfaceAt(int(profile_merit.get("bfl_surface", max(1, num_surfs - 2)))).ThicknessCell.MakeSolveVariable()
         except Exception:
             pass
 
     elif stage in ("image-quality", "field-balance"):
-        # Vary: all radii + all thicknesses
-        for s_idx in range(1, num_surfs):
+        # Vary: profile-selected radii + selected thicknesses
+        radius_surfaces = profile_variables.get(f"{stage}_radius_surfaces") or _profile_interior_surfaces(profile, num_surfs)
+        thickness_surfaces = profile_variables.get(f"{stage}_thickness_surfaces") or _profile_interior_surfaces(profile, num_surfs)
+        for s_idx in radius_surfaces:
             try:
                 surf = lde.GetSurfaceAt(s_idx)
                 surf.RadiusCell.MakeSolveVariable()
+            except Exception:
+                continue
+        for s_idx in thickness_surfaces:
+            try:
+                surf = lde.GetSurfaceAt(s_idx)
                 surf.ThicknessCell.MakeSolveVariable()
             except Exception:
                 continue
 
     elif stage == "manufacturability":
-        # Vary: all radii + all thicknesses + glass substitutions
-        for s_idx in range(1, num_surfs):
+        # Vary: profile-selected radii, thicknesses, and glass substitutions
+        radius_surfaces = profile_variables.get("manufacturability_radius_surfaces") or _profile_interior_surfaces(profile, num_surfs)
+        thickness_surfaces = profile_variables.get("manufacturability_thickness_surfaces") or _profile_interior_surfaces(profile, num_surfs)
+        material_surfaces = profile_variables.get("material_surfaces") or _profile_glass_surfaces(profile)
+        for s_idx in radius_surfaces:
             try:
                 surf = lde.GetSurfaceAt(s_idx)
                 surf.RadiusCell.MakeSolveVariable()
+            except Exception:
+                continue
+        for s_idx in thickness_surfaces:
+            try:
+                surf = lde.GetSurfaceAt(s_idx)
                 surf.ThicknessCell.MakeSolveVariable()
+            except Exception:
+                continue
+        for s_idx in material_surfaces:
+            try:
+                surf = lde.GetSurfaceAt(s_idx)
                 if surf.Material and surf.Material != "":
                     surf.MaterialCell.MakeSolveVariable()
             except Exception:
@@ -555,6 +670,33 @@ def configure_zoom_variables(system: Any, gap_surfaces: list[int],
 
 
 # ── Analysis export ──────────────────────────────────────────────────────────
+
+def _profile_interior_surfaces(profile: dict[str, Any], num_surfs: int) -> list[int]:
+    image_surface = int(profile.get("image_surface", max(1, num_surfs - 1)))
+    return [
+        int(surface["surface"])
+        for surface in profile.get("surfaces", [])
+        if 0 < int(surface["surface"]) < image_surface
+    ]
+
+
+def _profile_glass_surfaces(profile: dict[str, Any]) -> list[int]:
+    return [
+        int(surface["surface"])
+        for surface in profile.get("surfaces", [])
+        if surface.get("material")
+    ]
+
+
+def _profile_powered_surfaces(profile: dict[str, Any], num_surfs: int) -> list[int]:
+    powered = [
+        int(surface["surface"])
+        for surface in profile.get("surfaces", [])
+        if 0 < int(surface["surface"]) < int(profile.get("image_surface", num_surfs - 1))
+        and abs(float(surface.get("radius", float("inf")))) != float("inf")
+    ]
+    return powered or _profile_interior_surfaces(profile, num_surfs)
+
 
 def export_zoom_analyses(system: Any, analysis_dir: Path,
                          zoom_configs: list[dict[str, Any]]) -> list[str]:
@@ -682,7 +824,9 @@ def main() -> None:
     out_dir = Path(args.out).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    requirements = json.loads(Path(args.requirements).read_text(encoding="utf-8"))
+    requirements_path = Path(args.requirements)
+    requirements = json.loads(requirements_path.read_text(encoding="utf-8"))
+    lens_profile = load_lens_profile(requirements, requirements_path.parent)
     zoom_configs = requirements.get("constraints", {}).get("zoom_configurations", [])
 
     if not zoom_configs:
@@ -691,12 +835,13 @@ def main() -> None:
 
     # Save requirements copy
     (out_dir / "requirements.json").write_text(
-        Path(args.requirements).read_text(encoding="utf-8"), encoding="utf-8")
+        requirements_path.read_text(encoding="utf-8"), encoding="utf-8")
 
     log_path = out_dir / "design-log.jsonl"
 
     print("=" * 72)
-    print("ZOOM LENS AUTOMATED DESIGN — APS-C 18-55mm F/1.4")
+    print("ZOOM LENS AUTOMATED DESIGN")
+    print(f"  Profile: {lens_profile.get('name')}")
     print(f"  Configs: {len(zoom_configs)}")
     for c in zoom_configs:
         print(f"    {c['name']}: EFL={c['efl_mm']}mm F/{c['f_number']}")
@@ -712,15 +857,15 @@ def main() -> None:
         print("  Connected via Interactive Extension.")
 
         # ── Build starting prescription ──────────────────────────────────────
-        print("\n[2/5] Building 4-group zoom starting prescription...")
+        print("\n[2/5] Building profile-driven zoom starting prescription...")
         system.New(False)
         set_wavelengths(system, requirements.get("wavelengths_um") or [])
         set_fields(system, requirements.get("fields") or [])
         set_aperture(system, requirements.get("aperture") or {})
 
         lb = LensBuilder(system)
-        gap_surfaces = build_zoom_prescription(lb)
-        setup_zoom_mce(system, zoom_configs, gap_surfaces)
+        gap_surfaces = build_zoom_prescription_from_profile(lb, lens_profile)
+        setup_zoom_mce(system, zoom_configs, gap_surfaces, lens_profile)
 
         # ── Staged optimization ──────────────────────────────────────────────
         print("\n[3/5] Starting staged optimization loop...")
@@ -734,8 +879,8 @@ def main() -> None:
 
             merit_value = 9e9
             if stage != "baseline":
-                configure_zoom_variables(system, gap_surfaces, zoom_configs, stage)
-                build_merit_function(system, requirements, zoom_configs, stage)
+                configure_zoom_variables(system, gap_surfaces, zoom_configs, stage, lens_profile)
+                build_merit_function(system, requirements, zoom_configs, stage, lens_profile)
 
                 max_sec = requirements.get("automation", {}).get(
                     "max_optimization_seconds_per_stage", 120)
@@ -744,7 +889,7 @@ def main() -> None:
                 print(f"  Final merit: {merit_value:.6f}")
             else:
                 # Baseline: just evaluate without optimization
-                build_merit_function(system, requirements, zoom_configs, stage)
+                build_merit_function(system, requirements, zoom_configs, stage, lens_profile)
                 try:
                     calc = system.Tools.OpenMeritFunctionCalculator()
                     calc.RunAndWaitForCompletion()

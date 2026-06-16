@@ -7,6 +7,7 @@ Normalize user requirements into this shape before running the automated design 
   "system_type": "imaging_lens",
   "mode": "new_design_or_existing_file",
   "input_lens": null,
+  "lens_profile": "profiles/my_zoom_profile.json",
   "wavelengths_um": [{"value": 0.486, "weight": 1}, {"value": 0.588, "weight": 1}, {"value": 0.656, "weight": 1}],
   "fields": [{"type": "angle_deg", "value": 0}, {"type": "angle_deg", "value": 10}],
   "aperture": {"type": "f_number", "value": 4.0},
@@ -54,3 +55,39 @@ Normalize user requirements into this shape before running the automated design 
 
 Keep units explicit. For existing lenses, infer missing values from the loaded model before asking the user.
 If a user supplies or approves a seed case, record it here, keep the provenance in `seed_design.provenance`, and mirror any seed-to-target mismatch in `seed_design.structural_gaps` and the design log.
+
+## Zoom Lens Profile
+
+For zoom designs, `lens_profile` may be a path to a JSON profile or an inline object. The profile defines the starting architecture instead of hard-coding a specific APS-C or 18-55 mm structure in the agent.
+
+Minimum shape:
+
+```json
+{
+  "name": "my zoom profile",
+  "image_surface": 12,
+  "surfaces": [
+    {"surface": 0, "radius": "infinity", "thickness": "infinity", "material": ""},
+    {"surface": 1, "radius": 40.0, "thickness": 4.0, "material": "N-BK7"},
+    {"surface": 2, "radius": -40.0, "thickness": 8.0, "material": "", "variable_gap": "g1"},
+    {"surface": 12, "radius": "infinity", "thickness": 0.0, "material": ""}
+  ],
+  "variable_gaps": [
+    {"name": "g1", "surface": 2, "default_mm": 8.0, "per_config": {"wide": 6.0, "tele": 14.0}}
+  ],
+  "merit": {
+    "bfl_surface": 11,
+    "max_field_index": 3
+  },
+  "variables": {
+    "feasibility_radius_surfaces": [1],
+    "material_surfaces": [1]
+  }
+}
+```
+
+Each zoom configuration can override initial gaps explicitly:
+
+```json
+{"name": "wide", "efl_mm": 18.0, "f_number": 2.8, "gap_values_mm": {"g1": 6.0}}
+```

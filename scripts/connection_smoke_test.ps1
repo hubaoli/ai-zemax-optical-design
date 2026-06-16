@@ -1,6 +1,7 @@
 param(
     [string]$ZosRoot = "D:\Program Files\Ansys Zemax OpticStudio 2024 R1.00",
     [switch]$Standalone,
+    [int]$InstanceId = 1,
     [int]$TimeoutSeconds = 120
 )
 
@@ -71,7 +72,7 @@ if ($Standalone) {
     exit $(if ($result.Connected -and $result.License -and $result.PrimarySystem) { 0 } else { 2 })
 }
 
-$app = $connection.ConnectAsExtension(0)
+$app = $connection.ConnectAsExtension($InstanceId)
 Write-Status "Connected" ($null -ne $app)
 if ($null -eq $app) {
     exit 2

@@ -1,0 +1,73 @@
+{
+  "name": "APS-C 18-55mm F/1.4 four-group zoom starting profile",
+  "description": "Example profile only. The zoom agent can load any compatible profile from requirements.lens_profile.",
+  "image_surface": 24,
+  "surfaces": [
+    { "surface": 0, "radius": "infinity", "thickness": "infinity", "material": "" },
+    { "surface": 1, "radius": 90.0, "thickness": 9.0, "material": "N-BK7", "group": "front_fixed" },
+    { "surface": 2, "radius": -200.0, "thickness": 2.0, "material": "", "group": "front_fixed" },
+    { "surface": 3, "radius": 60.0, "thickness": 7.5, "material": "N-SK16", "group": "front_fixed" },
+    { "surface": 4, "radius": -130.0, "thickness": 0.5, "material": "", "group": "front_fixed" },
+    { "surface": 5, "radius": 48.0, "thickness": 8.5, "material": "N-BAF10", "group": "front_fixed" },
+    { "surface": 6, "radius": -70.0, "thickness": 5.0, "material": "N-SF5", "group": "front_fixed" },
+    { "surface": 7, "radius": -100.0, "thickness": 4.0, "material": "", "group": "gap", "variable_gap": "front_to_variator" },
+    { "surface": 8, "radius": -65.0, "thickness": 3.0, "material": "N-SF2", "group": "variator" },
+    { "surface": 9, "radius": 38.0, "thickness": 7.0, "material": "N-BK7", "group": "variator" },
+    { "surface": 10, "radius": -60.0, "thickness": 8.0, "material": "", "group": "gap", "variable_gap": "variator_to_compensator" },
+    { "surface": 11, "radius": 75.0, "thickness": 6.0, "material": "N-BK7", "group": "compensator" },
+    { "surface": 12, "radius": -90.0, "thickness": 0.5, "material": "", "group": "compensator" },
+    { "surface": 13, "radius": "infinity", "thickness": 1.5, "material": "", "group": "stop", "stop": true },
+    { "surface": 14, "radius": 55.0, "thickness": 5.5, "material": "N-SK16", "group": "compensator" },
+    { "surface": 15, "radius": -75.0, "thickness": 0.5, "material": "", "group": "compensator" },
+    { "surface": 16, "radius": 65.0, "thickness": 5.0, "material": "", "group": "gap", "variable_gap": "compensator_to_relay" },
+    { "surface": 17, "radius": 38.0, "thickness": 6.5, "material": "N-LAK22", "group": "rear_fixed" },
+    { "surface": 18, "radius": -60.0, "thickness": 0.3, "material": "", "group": "rear_fixed" },
+    { "surface": 19, "radius": 30.0, "thickness": 7.5, "material": "N-BK7", "group": "rear_fixed" },
+    { "surface": 20, "radius": -30.0, "thickness": 4.5, "material": "N-SF2", "group": "rear_fixed" },
+    { "surface": 21, "radius": 60.0, "thickness": 0.3, "material": "", "group": "rear_fixed" },
+    { "surface": 22, "radius": 48.0, "thickness": 5.0, "material": "N-SK16", "group": "rear_fixed" },
+    { "surface": 23, "radius": -110.0, "thickness": 25.0, "material": "", "group": "bfl" },
+    { "surface": 24, "radius": "infinity", "thickness": 0.0, "material": "" }
+  ],
+  "variable_gaps": [
+    {
+      "name": "front_to_variator",
+      "surface": 7,
+      "default_mm": 4.0,
+      "per_config": { "wide": 4.0, "mid": 22.0, "tele": 35.0 }
+    },
+    {
+      "name": "variator_to_compensator",
+      "surface": 10,
+      "default_mm": 12.0,
+      "per_config": { "wide": 12.0, "mid": 5.0, "tele": 2.0 }
+    },
+    {
+      "name": "compensator_to_relay",
+      "surface": 16,
+      "default_mm": 28.0,
+      "per_config": { "wide": 28.0, "mid": 17.0, "tele": 7.0 }
+    }
+  ],
+  "merit": {
+    "bfl_surface": 23,
+    "max_field_index": 3
+  },
+  "mce": {
+    "include_aperture_operand": true,
+    "include_field_operand": true,
+    "default_f_number": 1.4,
+    "default_image_height_mm": 14.17
+  },
+  "variables": {
+    "mce_variable_operand_types": ["THIC"],
+    "feasibility_radius_surfaces": [1, 3, 5, 8, 11, 14, 17, 19, 22],
+    "image-quality_radius_surfaces": [1, 3, 5, 8, 9, 11, 14, 17, 19, 20, 22, 23],
+    "image-quality_thickness_surfaces": [2, 4, 7, 10, 12, 15, 16, 18, 21, 23],
+    "field-balance_radius_surfaces": [1, 3, 5, 8, 9, 11, 14, 17, 19, 20, 22, 23],
+    "field-balance_thickness_surfaces": [2, 4, 7, 10, 12, 15, 16, 18, 21, 23],
+    "manufacturability_radius_surfaces": [1, 3, 5, 8, 11, 14, 17, 19, 22],
+    "manufacturability_thickness_surfaces": [2, 4, 7, 10, 12, 15, 16, 18, 21, 23],
+    "material_surfaces": [1, 3, 5, 6, 8, 9, 11, 14, 17, 19, 20, 22]
+  }
+}

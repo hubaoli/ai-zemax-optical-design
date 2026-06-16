@@ -2,7 +2,8 @@ param(
     [string]$ZosRoot = "D:\Program Files\Ansys Zemax OpticStudio 2024 R1.00",
     [string]$OutDir = "C:\tmp\zemax-single-lens-design",
     [double]$FNumber = 4.0,
-    [double]$FieldDeg = 5.0
+    [double]$FieldDeg = 5.0,
+    [int]$InstanceId = 1
 )
 
 $ErrorActionPreference = "Stop"
@@ -51,8 +52,8 @@ $logPath = Join-Path $OutDir "design-log.jsonl"
 
 Add-ZosAssemblies $ZosRoot
 $connection = New-Object ZOSAPI.ZOSAPI_Connection
-$app = $connection.ConnectAsExtension(0)
-if ($null -eq $app) { throw "ConnectAsExtension(0) failed. Start Programming > Interactive Extension in OpticStudio." }
+$app = $connection.ConnectAsExtension($InstanceId)
+if ($null -eq $app) { throw "ConnectAsExtension($InstanceId) failed. Start Programming > Interactive Extension in OpticStudio." }
 if (-not $app.IsValidLicenseForAPI) { throw "Connected, but IsValidLicenseForAPI is false." }
 if ($null -eq $app.PrimarySystem) { throw "Connected, but PrimarySystem is null." }
 

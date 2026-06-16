@@ -2,6 +2,7 @@
   "system_type": "imaging_lens",
   "mode": "new_design",
   "input_lens": null,
+  "lens_profile": "profiles/apsc_18_55_f14_zoom_profile.json",
   "description": "APS-C 3x zoom lens 18-55mm F/1.4 constant aperture",
   "wavelengths_um": [
     { "value": 0.48613270, "weight": 1 },
