@@ -2,10 +2,20 @@
 
 Automated optical design skill for **Claude Code** — drives **Ansys Zemax OpticStudio** through ZOS-API to turn optical requirements into executable, multi-stage design loops.
 
-[![version](https://img.shields.io/badge/version-1.2.0-blue)](https://github.com/Jerry-del975/ai-zemax-optical-design)
+[![version](https://img.shields.io/badge/version-1.3.0-blue)](https://github.com/Jerry-del975/ai-zemax-optical-design)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 ---
+
+## What's New in v1.3.0
+
+- **Profile-driven zoom lens design** — `zoom_lens_design_agent.py` is no longer hardcoded to APS-C 18-55mm. The complete starting prescription (surfaces, materials, variable gaps, MCE setup, optimization variables per stage) is defined in a standalone JSON profile. Swap profiles to design different zoom systems without touching Python code.
+- **Zoom lens profile schema** — new `lens_profile` field in requirements references a JSON profile file or inline object. Profiles define every surface, variable gap, glass material, stop location, merit function parameters, and per-stage variable release lists. See `examples/profiles/apsc_18_55_f14_zoom_profile.json` for the first example and `references/requirements-schema.md` for the schema.
+- **Per-configuration gap initialization** — `resolve_gap_initial_value()` supports three priority levels: explicit `gap_values_mm` in each zoom configuration → per-config name matching in `variable_gaps.per_config` → `default_mm` fallback. No more array-index-based gap lookup.
+- **Surgical variable control** — each optimization stage uses profile-defined surface lists (`feasibility_radius_surfaces`, `image-quality_radius_surfaces`, `material_surfaces`, etc.) instead of varying every surface. This prevents over-parameterization and accelerates convergence.
+- **`InstanceId` parameterization** — PowerShell connection scripts now accept `-InstanceId` (default 1) instead of hardcoded `ConnectAsExtension(0)`.
+- **Standalone pythonnet singlet script** — new `scripts/design_single_lens_pythonnet.py` connects directly via `clr` / pythonnet without ZOSPy dependency. Creates, optimizes, and exports analyses for a simple singlet.
+- **Zoom lens profile unit tests** — `tests/test_zoom_lens_profile.py` validates profile loading from path, prescription building with stop surfaces, and gap initialization priority logic.
 
 ## What's New in v1.2.0
 
@@ -78,6 +88,15 @@ python scripts/zoom_lens_design_agent.py \
   --out output/aps-c-zoom
 ```
 
+**Custom zoom lens (your own profile):**
+```bash
+# 1. Create a profile JSON (copy examples/profiles/ as starting point)
+# 2. Point requirements.lens_profile to your profile
+python scripts/zoom_lens_design_agent.py \
+  --requirements my_zoom_requirements.json \
+  --out output/my-zoom-design
+```
+
 ### 3. Review results
 
 ```
@@ -124,8 +143,11 @@ This skill turns Claude Code into a Zemax automation agent:
 ├── scripts/
 │   ├── zos_design_primitives.py          # Core: connection, analysis, optimization, save
 │   ├── automated_design_agent.py         # Prime lens design controller
-│   ├── zoom_lens_design_agent.py         # ★ Multi-config zoom design controller (new)
-│   └── connection_smoke_test.py          # Quick ZOS-API health check
+│   ├── zoom_lens_design_agent.py         # ★ Profile-driven zoom design controller (v1.3)
+│   ├── design_single_lens_pythonnet.py   # ★ Standalone pythonnet singlet (new)
+│   ├── connection_smoke_test.ps1         # PowerShell ZOS-API health check
+│   ├── connection_smoke_test.py          # Python ZOS-API health check
+│   └── design_single_lens_interactive.ps1
 │
 ├── references/
 │   ├── requirements-schema.md            # Normalized input schema
@@ -134,14 +156,17 @@ This skill turns Claude Code into a Zemax automation agent:
 │   └── zos-api-patterns.md               # ZOS-API 2024 R1 reference
 │
 ├── examples/
+│   ├── profiles/
+│   │   └── apsc_18_55_f14_zoom_profile.json  # ★ APS-C 4-group zoom profile (new)
 │   ├── minimal_imaging_requirements.json
-│   ├── apsc_18-55_f1.4_zoom_requirements.json  # ★ APS-C zoom example
+│   ├── apsc_18-55_f1.4_zoom_requirements.json
 │   └── seeded_complex_zoom_requirements.json
 │
 ├── tests/
 │   ├── test_zos_design_primitives.py
 │   ├── test_automated_design_agent.py
-│   └── test_requirements_schema.py
+│   ├── test_requirements_schema.py
+│   └── test_zoom_lens_profile.py         # ★ Profile loading & gap init tests (new)
 │
 └── output/                               # ★ Design outputs (gitignored)
 ```
@@ -153,8 +178,9 @@ This skill turns Claude Code into a Zemax automation agent:
 | Type | Agent | Features |
 |------|-------|----------|
 | Prime lens | `automated_design_agent.py` | Single-config, EFFL/BFL/F# targets |
-| Zoom lens | `zoom_lens_design_agent.py` | Multi-config MCE, variable air gaps, per-config EFL |
+| Zoom lens | `zoom_lens_design_agent.py` | JSON profile-driven, MCE multi-config, variable air gaps, per-config EFL |
 | Seed-based | `automated_design_agent.py` | Load `.zmx` as starting point, adapt to targets |
+| Singlet (pythonnet) | `design_single_lens_pythonnet.py` | Direct `clr` connection, no ZOSPy dependency |
 
 ---
 
@@ -163,10 +189,50 @@ This skill turns Claude Code into a Zemax automation agent:
 | Stage | What It Does | Variables |
 |-------|-------------|-----------|
 | **Baseline** | Export analyses without optimization | None |
-| **Feasibility** | Hit EFL, F/#, BFL, image height targets | MCE gaps, BFL, first curvature per group |
-| **Image Quality** | Minimize RMS spot, wavefront, chromatic error | All radii, selected thicknesses |
-| **Field Balance** | Equalize performance across fields/configs | All radii, all thicknesses |
-| **Manufacturability** | Enforce edge thickness, glass constraints | All radii, thicknesses, glass substitutions |
+| **Feasibility** | Hit EFL, F/#, BFL, image height targets | MCE gaps, BFL, profile-defined feasibility radii |
+| **Image Quality** | Minimize RMS spot, wavefront, chromatic error | Profile-defined radii + thicknesses |
+| **Field Balance** | Equalize performance across fields/configs | Full profile-defined radii + thicknesses |
+| **Manufacturability** | Enforce edge thickness, glass constraints | Profile-defined radii + thicknesses + glass substitutions |
+
+---
+
+## Zoom Lens Profile System (v1.3)
+
+The zoom agent is now fully profile-driven. Instead of a hardcoded prescription, swap a JSON file to design any zoom lens.
+
+```json
+{
+  "name": "my zoom profile",
+  "image_surface": 12,
+  "surfaces": [
+    {"surface": 1, "radius": 60.0, "thickness": 5.0, "material": "N-BK7"},
+    {"surface": 2, "radius": -80.0, "thickness": 8.0, "material": "", "variable_gap": "g1"},
+    {"surface": 5, "radius": 55.0, "thickness": 4.0, "material": "N-BK7", "stop": true}
+  ],
+  "variable_gaps": [
+    {"name": "g1", "surface": 2, "default_mm": 8.0, "per_config": {"wide": 6.0, "tele": 14.0}}
+  ],
+  "merit": {"bfl_surface": 11, "max_field_index": 3},
+  "variables": {
+    "feasibility_radius_surfaces": [1, 3, 5],
+    "image-quality_radius_surfaces": [1, 2, 3, 4, 5],
+    "image-quality_thickness_surfaces": [2, 4, 7],
+    "material_surfaces": [1, 3, 5]
+  }
+}
+```
+
+Key profile fields:
+
+| Section | Purpose |
+|---------|---------|
+| `surfaces` | Complete prescription — radius, thickness, material, stop flag, group label, `variable_gap` tag |
+| `variable_gaps` | Which gaps vary with zoom position, default values, and per-configuration overrides |
+| `merit` | BFL surface reference and max field index for merit function construction |
+| `mce` | Multi-Configuration Editor settings (aperture/field operand inclusion) |
+| `variables` | Per-stage surface lists controlling exactly which radii, thicknesses, and materials are released |
+
+Each zoom configuration can override initial gap values via `gap_values_mm` or `per_config` name matching. See `examples/profiles/apsc_18_55_f14_zoom_profile.json` for a complete 4-group 24-surface example.
 
 ---
 
