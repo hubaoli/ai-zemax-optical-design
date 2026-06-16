@@ -14,7 +14,7 @@ Automated optical design skill for **Claude Code** — drives **Ansys Zemax Opti
 - **Per-configuration gap initialization** — `resolve_gap_initial_value()` supports three priority levels: explicit `gap_values_mm` in each zoom configuration → per-config name matching in `variable_gaps.per_config` → `default_mm` fallback. No more array-index-based gap lookup.
 - **Surgical variable control** — each optimization stage uses profile-defined surface lists (`feasibility_radius_surfaces`, `image-quality_radius_surfaces`, `material_surfaces`, etc.) instead of varying every surface. This prevents over-parameterization and accelerates convergence.
 - **`InstanceId` parameterization** — PowerShell connection scripts now accept `-InstanceId` (default 1) instead of hardcoded `ConnectAsExtension(0)`.
-- **Standalone pythonnet singlet script** — new `scripts/design_single_lens_pythonnet.py` connects directly via `clr` / pythonnet without ZOSPy dependency. Creates, optimizes, and exports analyses for a simple singlet.
+- **pythonnet fallback singlet script** — new `scripts/design_single_lens_pythonnet.py` is a lightweight alternative that connects directly via `clr` / pythonnet without ZOSPy. Intended as a fallback for environments where ZOSPy cannot be installed; the primary connection layer for all design agents remains ZOSPy.
 - **Zoom lens profile unit tests** — `tests/test_zoom_lens_profile.py` validates profile loading from path, prescription building with stop surfaces, and gap initialization priority logic.
 
 ## What's New in v1.2.0
@@ -27,7 +27,7 @@ Automated optical design skill for **Claude Code** — drives **Ansys Zemax Opti
 
 ## What's New in v1.1.0
 
-- **ZOSPy integration** — connection layer uses [ZOSPy](https://github.com/MREYE-LUMC/ZOSPy) for version discovery. Falls back to pythonnet for direct API access when needed.
+- **ZOSPy integration** — connection layer uses [ZOSPy](https://github.com/MREYE-LUMC/ZOSPy) for automatic version discovery across OpticStudio v20.3 through v26+. A standalone pythonnet fallback script is also available for environments where ZOSPy cannot be installed.
 - **Multi-version support** — OpticStudio v20.3 through v26+.
 - **Dual-mode connection** — Interactive Extension (recommended) and Standalone.
 
@@ -56,7 +56,7 @@ The postinstall script deploys the skill to `~/.claude/skills/ai-zemax-optical-d
 | **OS** | Windows 10/11 |
 | **OpticStudio** | 2024 R1 (tested), v20.3+ (via ZOSPy) |
 | **Python** | 3.10+ |
-| **Python packages** | `zospy>=2.1`, `pythonnet` |
+| **Python packages** | `zospy>=2.1` (primary connection, multi-version auto-discovery), `pythonnet` (underlying .NET bridge, also used as fallback when ZOSPy is unavailable) |
 | **Claude Code** | latest |
 
 ---
@@ -141,12 +141,12 @@ This skill turns Claude Code into a Zemax automation agent:
 ├── install.js                            # Postinstall: deploys skill to ~/.claude/skills/
 │
 ├── scripts/
-│   ├── zos_design_primitives.py          # Core: connection, analysis, optimization, save
-│   ├── automated_design_agent.py         # Prime lens design controller
-│   ├── zoom_lens_design_agent.py         # ★ Profile-driven zoom design controller (v1.3)
-│   ├── design_single_lens_pythonnet.py   # ★ Standalone pythonnet singlet (new)
+│   ├── zos_design_primitives.py          # Core: ZOSPy connection, analysis, optimization, save
+│   ├── automated_design_agent.py         # Prime lens design controller (ZOSPy)
+│   ├── zoom_lens_design_agent.py         # ★ Profile-driven zoom design controller (ZOSPy)
+│   ├── design_single_lens_pythonnet.py   # ★ Lightweight pythonnet fallback singlet (no ZOSPy)
 │   ├── connection_smoke_test.ps1         # PowerShell ZOS-API health check
-│   ├── connection_smoke_test.py          # Python ZOS-API health check
+│   ├── connection_smoke_test.py          # Python ZOS-API health check (ZOSPy)
 │   └── design_single_lens_interactive.ps1
 │
 ├── references/
@@ -175,12 +175,12 @@ This skill turns Claude Code into a Zemax automation agent:
 
 ## Supported Design Types
 
-| Type | Agent | Features |
-|------|-------|----------|
-| Prime lens | `automated_design_agent.py` | Single-config, EFFL/BFL/F# targets |
-| Zoom lens | `zoom_lens_design_agent.py` | JSON profile-driven, MCE multi-config, variable air gaps, per-config EFL |
-| Seed-based | `automated_design_agent.py` | Load `.zmx` as starting point, adapt to targets |
-| Singlet (pythonnet) | `design_single_lens_pythonnet.py` | Direct `clr` connection, no ZOSPy dependency |
+| Type | Agent | Connection | Features |
+|------|-------|------------|----------|
+| Prime lens | `automated_design_agent.py` | ZOSPy (default) | Single-config, EFFL/BFL/F# targets |
+| Zoom lens | `zoom_lens_design_agent.py` | ZOSPy (default) | JSON profile-driven, MCE multi-config, variable air gaps, per-config EFL |
+| Seed-based | `automated_design_agent.py` | ZOSPy (default) | Load `.zmx` as starting point, adapt to targets |
+| Singlet (fallback) | `design_single_lens_pythonnet.py` | pythonnet direct | No ZOSPy dependency; lightweight verification |
 
 ---
 
@@ -238,7 +238,9 @@ Each zoom configuration can override initial gap values via `gap_values_mm` or `
 
 ## Connection
 
-The skill supports two connection modes:
+### Default: ZOSPy (multi-version auto-discovery)
+
+All design agents use ZOSPy as the primary connection layer. ZOSPy automatically discovers your OpticStudio installation (v20.3 through v26+), loads the correct ZOSAPI DLLs, and returns a ready-to-use application object. No hardcoded paths, no version-specific configuration.
 
 ```python
 from zos_design_primitives import connect_zemax
@@ -251,6 +253,18 @@ app = connect_zemax(standalone=True)
 
 system = app.PrimarySystem
 ```
+
+### Fallback: pythonnet direct connection
+
+When ZOSPy cannot be installed (air-gapped environments, dependency conflicts), `design_single_lens_pythonnet.py` provides a lightweight fallback that loads the ZOSAPI DLLs directly via `clr.AddReference`. This requires manually specifying the OpticStudio install path via `--zos-root` and only supports a single version at a time.
+
+```bash
+python scripts/design_single_lens_pythonnet.py \
+  --zos-root "D:\Program Files\Ansys Zemax OpticStudio 2024 R1.00" \
+  --out output/singlet
+```
+
+The two main design agents (`automated_design_agent.py` and `zoom_lens_design_agent.py`) **always use ZOSPy** — there is no scenario where they silently fall back to pythonnet. The pythonnet path exists only in the standalone singlet script for environments that explicitly choose it.
 
 ---
 
