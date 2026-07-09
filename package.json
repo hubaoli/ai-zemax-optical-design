@@ -1,7 +1,7 @@
 {
   "name": "@jerrydel975/ai-zemax-optical-design",
   "version": "1.2.0",
-  "description": "Claude Code skill for automated optical design with Ansys Zemax OpticStudio through ZOS-API — turns requirements into executable design loops",
+  "description": "Claude Code and Codex skill for automated optical design with Ansys Zemax OpticStudio through ZOS-API — turns requirements into executable design loops",
   "keywords": [
     "zemax",
     "optical-design",
@@ -12,7 +12,10 @@
     "opticstudio",
     "optics",
     "imaging",
-    "lens-optimization"
+    "lens-optimization",
+    "codex",
+    "codex-skill",
+    "openai-codex"
   ],
   "author": {
     "name": "Jerry",
@@ -36,6 +39,8 @@
   ],
   "scripts": {
     "postinstall": "node install.js",
+    "install:claude": "node install.js --target claude",
+    "install:codex": "node install.js --target codex",
     "test": "echo \"Run: python -m pytest tests/\""
   },
   "files": [

@@ -1,6 +1,6 @@
 # AI Zemax Optical Design
 
-Automated optical design skill for **Claude Code** — drives **Ansys Zemax OpticStudio** through ZOS-API to turn optical requirements into executable, multi-stage design loops.
+Automated optical design skill for **Claude Code and Codex** — drives **Ansys Zemax OpticStudio** through ZOS-API to turn optical requirements into executable, multi-stage design loops.
 
 [![version](https://img.shields.io/badge/version-1.3.0-blue)](https://github.com/Jerry-del975/ai-zemax-optical-design)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -43,11 +43,14 @@ cd ai-zemax-optical-design
 # Install Python dependencies
 pip install zospy pythonnet
 
-# Install as Claude Code skill
+# Install as Claude Code skill (default)
 npm install
+
+# Or install as Codex skill
+npm run install:codex
 ```
 
-The postinstall script deploys the skill to `~/.claude/skills/ai-zemax-optical-design/`. Restart Claude Code and the skill is ready.
+The postinstall script deploys the skill to `~/.claude/skills/ai-zemax-optical-design/` by default. To install for Codex, run `npm run install:codex`; this deploys to `${CODEX_HOME:-~/.codex}/skills/ai-zemax-optical-design/`. Restart the target agent after installation.
 
 ### Prerequisites
 
@@ -57,7 +60,7 @@ The postinstall script deploys the skill to `~/.claude/skills/ai-zemax-optical-d
 | **OpticStudio** | 2024 R1 (tested), v20.3+ (via ZOSPy) |
 | **Python** | 3.10+ |
 | **Python packages** | `zospy>=2.1` (primary connection, multi-version auto-discovery), `pythonnet` (underlying .NET bridge, also used as fallback when ZOSPy is unavailable) |
-| **Claude Code** | latest |
+| **Claude Code or Codex** | latest |
 
 ---
 
@@ -121,7 +124,7 @@ output/aps-c-zoom/
 
 ## What It Does
 
-This skill turns Claude Code into a Zemax automation agent:
+This skill turns Claude Code or Codex into a Zemax automation agent:
 
 1. **Parse requirements** — normalize optical specs from JSON or existing `.zmx` / `.zos` / `.zar` files
 2. **Build or load models** — create sequential starting prescriptions (prime or zoom), or adapt existing designs
@@ -135,10 +138,10 @@ This skill turns Claude Code into a Zemax automation agent:
 ## Project Structure
 
 ```
-├── SKILL.md                              # Skill definition (loaded by Claude Code)
+├── SKILL.md                              # Skill definition (loaded by Claude Code or Codex)
 ├── README.md
 ├── package.json
-├── install.js                            # Postinstall: deploys skill to ~/.claude/skills/
+├── install.js                            # Installer: deploys skill to ~/.claude/skills/ or ~/.codex/skills/
 │
 ├── scripts/
 │   ├── zos_design_primitives.py          # Core: ZOSPy connection, analysis, optimization, save
@@ -281,8 +284,11 @@ The two main design agents (`automated_design_agent.py` and `zoom_lens_design_ag
 ## Upgrading
 
 ```bash
-# Remove old skill
+# Remove old Claude Code skill
 rm -rf ~/.claude/skills/ai-zemax-optical-design
+
+# Or remove old Codex skill
+rm -rf ~/.codex/skills/ai-zemax-optical-design
 
 # Pull latest
 cd ai-zemax-optical-design
