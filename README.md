@@ -171,6 +171,13 @@ This skill turns Claude Code or Codex into a Zemax automation agent:
 │   ├── test_requirements_schema.py
 │   └── test_zoom_lens_profile.py         # ★ Profile loading & gap init tests (new)
 │
+├── matlab/                               # ★ MATLAB ZOS-API rule pack (same design loop)
+│   ├── SKILL.md
+│   ├── README.md
+│   ├── references/
+│   ├── scripts/                          # connectionSmokeTest, agents, +zos/
+│   └── tests/
+│
 └── output/                               # ★ Design outputs (gitignored)
 ```
 
@@ -236,6 +243,18 @@ Key profile fields:
 | `variables` | Per-stage surface lists controlling exactly which radii, thicknesses, and materials are released |
 
 Each zoom configuration can override initial gap values via `gap_values_mm` or `per_config` name matching. See `examples/profiles/apsc_18_55_f14_zoom_profile.json` for a complete 4-group 24-surface example.
+
+---
+
+## MATLAB ZOS-API rules (same design loop)
+
+Python + ZOSPy is the original automation path. A parallel **MATLAB + .NET ZOS-API** rule pack lives in [`matlab/`](matlab/):
+
+- [`matlab/SKILL.md`](matlab/SKILL.md) — agent operating contract (connect, seed policy, staged loop, artifacts)
+- [`matlab/README.md`](matlab/README.md) — how to use the MATLAB rules
+- [`matlab/references/`](matlab/references/) — connection, API patterns, merit function, MCE/zoom profiles, result parsing
+
+Requirements JSON and zoom profiles under `examples/` are **shared**. Do not invent a second schema. MATLAB must use official ZOS-API (`NET.addAssembly` + `ZOSAPI_NetHelper`), not DDE.
 
 ---
 
